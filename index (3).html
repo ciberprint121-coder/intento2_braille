@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arduino → Texto & Braille con Voz</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f9fafb; color: #111; margin: 0; }
+  header { background: #111; color: white; padding: 1rem; text-align: center; }
+  main { max-width: 900px; margin: auto; padding: 1rem; }
+  .card { background: white; padding: 1rem; margin: 1rem 0; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  button { padding: 0.5rem 1rem; margin: 0.25rem; border-radius: 6px; border: none; cursor: pointer; }
+  .primary { background: #111; color: white; }
+  .secondary { background: white; color: #111; border: 1px solid #111; }
+  .output { font-size: 1.5rem; min-height: 2rem; }
+  .braille { font-size: 2rem; }
+  pre { background: #111; color: white; padding: 1rem; overflow: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Arduino → Texto & Braille con Voz</h1>
+</header>
+<main>
+  <div class="card">
+    <button id="btnConnect" class="primary">Conectar</button>
+    <button id="btnDisconnect" class="secondary" disabled>Desconectar</button>
+    <button id="btnClear" class="secondary">Limpiar</button>
+    <button id="btnSpace" class="secondary">Espacio</button>
+    <button id="btnBack" class="secondary">Borrar</button>
+  </div>
+  <div class="card">
+    <h3>Texto recibido</h3>
+    <div id="textOut" class="output">Conecta el Arduino para comenzar</div>
+    <h3>Braille</h3>
+    <div id="brailleOut" class="braille">⠀</div>
+  </div>
+  <div class="card">
+    <h3>Registro Serial</h3>
+    <pre id="log"></pre>
+  </div>
+</main>
+<script>
+const BRAILLE_MAP = { a:"\u2801",b:"\u2803",c:"\u2809",d:"\u2819",e:"\u2811",f:"\u280B",g:"\u281B",h:"\u2813",i:"\u280A",j:"\u281A",k:"\u2805",l:"\u2807",m:"\u280D",n:"\u281D",o:"\u2815",p:"\u280F",q:"\u281F",r:"\u2817",s:"\u280E",t:"\u281E",u:"\u2825",v:"\u2827",w:"\u283A",x:"\u282D",y:"\u283D",z:"\u2835", ' ':"\u2800" };
+const CAPITAL = "\u2820";
+function toBraille(text){
+  let out = "";
+  for (const ch of text) {
+    if (/[A-ZÁÉÍÓÚÑÜ]/.test(ch)) out += CAPITAL;
+    const base = ch.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace('ñ','n').replace('ü','u').toLowerCase();
+    out += BRAILLE_MAP[base] || ch;
+  }
+  return out;
+}
+function speak(text){
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'es-ES';
+  speechSynthesis.speak(utter);
+}
+let port, reader, bufferText = '';
+const ui = {
+  btnConnect: document.getElementById('btnConnect'),
+  btnDisconnect: document.getElementById('btnDisconnect'),
+  btnClear: document.getElementById('btnClear'),
+  btnSpace: document.getElementById('btnSpace'),
+  btnBack: document.getElementById('btnBack'),
+  textOut: document.getElementById('textOut'),
+  brailleOut: document.getElementById('brailleOut'),
+  log: document.getElementById('log')
+};
+function appendLog(line){ ui.log.textContent += line + "\n"; ui.log.scrollTop = ui.log.scrollHeight; }
+function renderOutputs(){
+  ui.textOut.textContent = bufferText || '(vacío)';
+  ui.brailleOut.textContent = toBraille(bufferText || ' ');
+}
+async function connect(){
+  try{
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    ui.btnConnect.disabled = true; ui.btnDisconnect.disabled = false;
+    const decoder = new TextDecoderStream();
+    port.readable.pipeTo(decoder.writable);
+    reader = decoder.readable.getReader();
+    bufferText = '';
+    renderOutputs();
+    while(true){
+      const {value, done} = await reader.read();
+      if(done) break;
+      if(value){ handleChunk(value); }
+    }
+  }catch(e){ appendLog('Error: ' + e); }
+}
+function handleChunk(value){
+  appendLog('RX: ' + value);
+  if(value.includes('Frase completa:')){
+    const frase = value.split(':').slice(1).join(':').trim();
+    bufferText = frase; renderOutputs(); speak(frase);
+  } else if(value.includes('Letra agregada:')){
+    const letra = value.split(':').slice(1).join(':').trim().charAt(0);
+    bufferText += letra; renderOutputs(); speak(letra);
+  }
+}
+async function disconnect(){
+  if(reader){ await reader.cancel(); reader.releaseLock(); }
+  if(port){ await port.close(); }
+  ui.btnConnect.disabled = false; ui.btnDisconnect.disabled = true;
+  appendLog('Desconectado');
+}
+ui.btnConnect.onclick = connect;
+ui.btnDisconnect.onclick = disconnect;
+ui.btnClear.onclick = ()=>{ bufferText=''; renderOutputs(); };
+ui.btnSpace.onclick = ()=>{ bufferText += ' '; renderOutputs(); };
+ui.btnBack.onclick = ()=>{ bufferText = bufferText.slice(0,-1); renderOutputs(); };
+renderOutputs();
+</script>
+</body>
+</html>
